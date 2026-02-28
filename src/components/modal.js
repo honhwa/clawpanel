@@ -176,7 +176,10 @@ export function showUpgradeModal() {
     },
     setProgress(pct) {
       fill.style.width = pct + '%'
-      text.textContent = pct >= 100 ? '完成' : `升级中... ${pct}%`
+      if (pct >= 100) text.textContent = '完成'
+      else if (pct >= 75) text.textContent = '正在安装...'
+      else if (pct >= 30) text.textContent = '正在下载依赖...'
+      else text.textContent = '准备中...'
     },
     setDone(msg) {
       text.textContent = msg || '升级完成'

@@ -158,17 +158,20 @@ pub async fn upgrade_openclaw(app: tauri::AppHandle, source: String) -> Result<S
         .spawn()
         .map_err(|e| format!("执行升级命令失败: {e}"))?;
 
-    // 读取 stderr（npm 主要输出在 stderr）
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
 
-    let _ = app.emit("upgrade-progress", 30);
-
+    // stderr 每行递增进度（10→80 区间），让用户看到进度在动
     let app2 = app.clone();
     let handle = std::thread::spawn(move || {
+        let mut progress: u32 = 15;
         if let Some(pipe) = stderr {
             for line in BufReader::new(pipe).lines().map_while(Result::ok) {
                 let _ = app2.emit("upgrade-log", &line);
+                if progress < 75 {
+                    progress += 2;
+                    let _ = app2.emit("upgrade-progress", progress);
+                }
             }
         }
     });
