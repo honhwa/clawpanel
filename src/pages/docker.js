@@ -7,7 +7,7 @@ import { toast } from '../components/toast.js'
 import { showConfirm } from '../components/modal.js'
 import { icon } from '../lib/icons.js'
 import { pixelRole, pixelBarracks } from '../lib/pixel-roles.js'
-import { getActiveInstance, switchInstance } from '../lib/app-state.js'
+import { getActiveInstance, switchInstance, isInDocker } from '../lib/app-state.js'
 import { renderSidebar } from '../components/sidebar.js'
 import { reloadCurrentRoute } from '../router.js'
 import { DOCKER_TASK_TIMEOUT_MS, buildDockerDispatchTargets, buildDockerInstanceSwitchContext } from '../lib/docker-tasking.js'
@@ -191,6 +191,33 @@ async function loadClusterOverview(page) {
     if (detail) detail.textContent = `${nodes.length} 节点 · ${runningContainers} 运行 / ${totalContainers} 总计`
   } catch (e) {
     page.querySelector('#cluster-stats').innerHTML = `<span class="cluster-stat" style="color:var(--error,#ef4444)">${icon('x-circle', 12)} Docker 未连接: ${esc(e.message)}</span>`
+
+    // ClawPanel 自身运行在 Docker 容器中时，显示容器内专属指引
+    if (isInDocker()) {
+      page.querySelector('#workers-grid').innerHTML = `
+        <div class="docker-empty">
+          <div class="docker-empty-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48"><rect x="1" y="11" width="4" height="3" rx=".5"/><rect x="6" y="11" width="4" height="3" rx=".5"/><rect x="11" y="11" width="4" height="3" rx=".5"/><rect x="6" y="7" width="4" height="3" rx=".5"/><rect x="11" y="7" width="4" height="3" rx=".5"/><rect x="16" y="11" width="4" height="3" rx=".5"/><rect x="11" y="3" width="4" height="3" rx=".5"/><path d="M2 17c1 3 4 5 10 5s9-2 10-5"/></svg>
+          </div>
+          <div class="docker-empty-title">Docker 宿主机未连接</div>
+          <div class="docker-empty-desc">ClawPanel 当前运行在 Docker 容器中，需要连接宿主机 Docker 守护进程才能管理龙虾军团。</div>
+          <div class="docker-guide-section">
+            <div class="docker-guide-title">${icon('gear', 14)} 连接宿主机 Docker</div>
+            <ol>
+              <li>确保宿主机 Docker 守护进程已开启 TCP 或 Unix Socket 访问</li>
+              <li>挂载 Docker Socket：在 docker-compose.yml 中添加 <code style="font-size:11px">- /var/run/docker.sock:/var/run/docker.sock</code></li>
+              <li>或在「军营」区域添加远程 Docker 节点（TCP 方式：<code style="font-size:11px">http://宿主机IP:2375</code>）</li>
+              <li>重启容器后回到本页面点击「刷新」</li>
+            </ol>
+            <div style="margin-top:8px;font-size:12px;color:var(--text-tertiary)">龙虾军团功能用于在宿主机上部署和管理多个 OpenClaw 容器实例</div>
+          </div>
+        </div>
+      `
+      page.querySelector('#docker-nodes').innerHTML = ''
+      page.querySelector('#docker-containers').innerHTML = ''
+      return
+    }
+
     const isWin = navigator.userAgent.includes('Windows')
     const isMacOS = navigator.userAgent.includes('Mac')
     const installGuide = isWin
