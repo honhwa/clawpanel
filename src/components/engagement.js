@@ -110,6 +110,10 @@ export function tryShowEngagement() {
           <img src="/images/OpenClaw-DY.png" alt="抖音交流群" />
           <div class="engage-qr-label">抖音群</div>
         </a>
+        <a class="engage-qr-item" href="https://qt.cool/c/feishu" target="_blank" rel="noopener">
+          <img src="https://qt.cool/c/feishu/qr.png" alt="飞书交流群" />
+          <div class="engage-qr-label">飞书群</div>
+        </a>
       </div>
 
       <div class="engage-footer">

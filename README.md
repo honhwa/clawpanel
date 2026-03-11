@@ -55,6 +55,10 @@ ClawPanel 是 [OpenClaw](https://github.com/1186258278/OpenClawChineseTranslatio
       <a href="https://qt.cool/c/OpenClawDY"><img src="docs/qr-dy.png" width="140" alt="抖音群二维码"></a><br>
       <a href="https://qt.cool/c/OpenClawDY"><strong>抖音群</strong></a>
     </td>
+    <td align="center">
+      <a href="https://qt.cool/c/feishu"><img src="https://qt.cool/c/feishu/qr.png" width="140" alt="飞书群二维码"></a><br>
+      <a href="https://qt.cool/c/feishu"><strong>飞书群</strong></a>
+    </td>
   </tr>
 </table>
 
@@ -66,6 +70,8 @@ ClawPanel 是 [OpenClaw](https://github.com/1186258278/OpenClawChineseTranslatio
   <a href="https://github.com/qingchencloud/clawpanel/discussions"><strong>Discussions</strong></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/qingchencloud/clawpanel/issues/new"><strong>反馈 Issue</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://qt.cool/c/feishu"><strong>飞书群</strong></a>
 </p>
 
 ## 下载安装
