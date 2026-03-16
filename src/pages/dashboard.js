@@ -56,18 +56,23 @@ export function cleanup() {
   if (_unsubGw) { _unsubGw(); _unsubGw = null }
 }
 
-async function loadDashboardData(page) {
+let _dashboardInitialized = false
+
+async function loadDashboardData(page, fullRefresh = false) {
   // 分波加载：关键数据先渲染，次要数据后填充，减少白屏等待
+  // 轻量调用（读文件）每次都做；重量调用（spawn CLI/网络请求）只在首次或手动刷新时做
   const coreP = Promise.allSettled([
     api.getServicesStatus(),
-    api.getVersionInfo(),
     api.readOpenclawConfig(),
+    // 版本信息：首次加载或手动刷新时才查询（避免 ARM 设备上频繁查 npm registry）
+    (!_dashboardInitialized || fullRefresh) ? api.getVersionInfo() : Promise.resolve(null),
   ])
   const secondaryP = Promise.allSettled([
     api.listAgents(),
     api.readMcpConfig(),
     api.listBackups(),
-    api.getStatusSummary(),
+    // getStatusSummary 是最重的调用（spawn openclaw status --json），只在首次加载时调用
+    (!_dashboardInitialized || fullRefresh) ? api.getStatusSummary() : Promise.resolve(null),
   ])
   const logsP = api.readLogTail('gateway', 20).catch(() => '')
 
@@ -111,6 +116,8 @@ async function loadDashboardData(page) {
   // 第三波：日志（最低优先级）
   const logs = await logsP
   renderLogs(page, logs)
+
+  _dashboardInitialized = true
 }
 
 function renderStatCards(page, services, version, agents, config) {

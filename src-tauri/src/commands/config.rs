@@ -67,7 +67,18 @@ struct VersionPolicyEntry {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct R2Config {
+    #[serde(default)]
+    #[serde(rename = "baseUrl")]
+    base_url: Option<String>,
+    #[serde(default)]
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct VersionPolicy {
+    #[serde(default)]
+    r2: R2Config,
     #[serde(default)]
     default: VersionPolicyEntry,
     #[serde(default)]
@@ -111,6 +122,10 @@ fn recommended_is_newer(recommended: &str, current: &str) -> bool {
 
 fn load_version_policy() -> VersionPolicy {
     serde_json::from_str(include_str!("../../../openclaw-version-policy.json")).unwrap_or_default()
+}
+
+fn r2_config() -> R2Config {
+    load_version_policy().r2
 }
 
 fn recommended_version_for(source: &str) -> Option<String> {
@@ -863,6 +878,359 @@ pub async fn upgrade_openclaw(
     Ok("任务已启动".into())
 }
 
+/// 检测当前平台标识（用于 R2 归档文件名）
+fn r2_platform_key() -> &'static str {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        "win-x64"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "darwin-arm64"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "darwin-x64"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "linux-x64"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        "linux-arm64"
+    }
+    #[cfg(not(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+    )))]
+    {
+        "unknown"
+    }
+}
+
+/// npm 全局 node_modules 目录
+fn npm_global_modules_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .ok()
+            .map(|a| PathBuf::from(a).join("npm").join("node_modules"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // homebrew 或系统 node
+        let brew = PathBuf::from("/opt/homebrew/lib/node_modules");
+        if brew.exists() {
+            return Some(brew);
+        }
+        let sys = PathBuf::from("/usr/local/lib/node_modules");
+        if sys.exists() {
+            return Some(sys);
+        }
+        Some(brew) // fallback to homebrew path
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // 尝试 npm config get prefix
+        if let Ok(output) = Command::new("npm")
+            .args(["config", "get", "prefix"])
+            .output()
+        {
+            let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !prefix.is_empty() {
+                return Some(PathBuf::from(prefix).join("lib").join("node_modules"));
+            }
+        }
+        Some(PathBuf::from("/usr/local/lib/node_modules"))
+    }
+}
+
+/// npm 全局 bin 目录
+fn npm_global_bin_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .ok()
+            .map(|a| PathBuf::from(a).join("npm"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let brew = PathBuf::from("/opt/homebrew/bin");
+        if brew.exists() {
+            return Some(brew);
+        }
+        Some(PathBuf::from("/usr/local/bin"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = Command::new("npm")
+            .args(["config", "get", "prefix"])
+            .output()
+        {
+            let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !prefix.is_empty() {
+                return Some(PathBuf::from(prefix).join("bin"));
+            }
+        }
+        Some(PathBuf::from("/usr/local/bin"))
+    }
+}
+
+/// 尝试从 R2 CDN 下载预装归档安装 OpenClaw（跳过 npm 依赖解析）
+/// 成功返回 Ok(版本号)，失败返回 Err(原因) 供 caller 降级到 npm install
+async fn try_r2_install(
+    app: &tauri::AppHandle,
+    version: &str,
+    source: &str,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use tauri::Emitter;
+
+    let r2 = r2_config();
+    if !r2.enabled {
+        return Err("R2 加速未启用".into());
+    }
+    let base_url = r2.base_url.as_deref().ok_or("R2 baseUrl 未配置")?;
+    let platform = r2_platform_key();
+    if platform == "unknown" {
+        return Err("当前平台不支持 R2 预装归档".into());
+    }
+
+    // 1. 获取 latest.json
+    let _ = app.emit("upgrade-log", "尝试从 CDN 加速下载...");
+    let manifest_url = format!("{}/latest.json", base_url);
+    let client = crate::commands::build_http_client(std::time::Duration::from_secs(10), None)
+        .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
+    let manifest_resp = client
+        .get(&manifest_url)
+        .send()
+        .await
+        .map_err(|e| format!("获取 CDN 清单失败: {e}"))?;
+    if !manifest_resp.status().is_success() {
+        return Err(format!("CDN 清单不可用 (HTTP {})", manifest_resp.status()));
+    }
+    let manifest: Value = manifest_resp
+        .json()
+        .await
+        .map_err(|e| format!("CDN 清单解析失败: {e}"))?;
+
+    // 2. 查找版本和平台对应的归档 URL
+    let source_key = if source == "official" {
+        "official"
+    } else {
+        "chinese"
+    };
+    let asset = manifest
+        .get(source_key)
+        .and_then(|s| s.get("assets"))
+        .and_then(|a| a.get(platform))
+        .ok_or_else(|| format!("CDN 无 {source_key}/{platform} 归档"))?;
+    let archive_url = asset
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or("CDN 归档 URL 缺失")?;
+    let expected_sha = asset.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+    let expected_size = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+    let cdn_version = manifest
+        .get(source_key)
+        .and_then(|s| s.get("version"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(version);
+
+    // 版本匹配检查（如果用户指定了版本，CDN 版本必须匹配）
+    if version != "latest" && !versions_match(cdn_version, version) {
+        return Err(format!(
+            "CDN 版本 {cdn_version} 与请求版本 {version} 不匹配"
+        ));
+    }
+
+    let size_mb = if expected_size > 0 {
+        format!("{:.0}MB", expected_size as f64 / 1_048_576.0)
+    } else {
+        "未知大小".into()
+    };
+    let _ = app.emit(
+        "upgrade-log",
+        format!("CDN 下载: {cdn_version} ({platform}, {size_mb})"),
+    );
+    let _ = app.emit("upgrade-progress", 15);
+
+    // 3. 流式下载到临时文件
+    let tmp_dir = std::env::temp_dir();
+    let archive_path = tmp_dir.join(format!("openclaw-{platform}.tgz"));
+    let dl_client = crate::commands::build_http_client(std::time::Duration::from_secs(300), None)
+        .map_err(|e| format!("下载客户端创建失败: {e}"))?;
+    let dl_resp = dl_client
+        .get(archive_url)
+        .send()
+        .await
+        .map_err(|e| format!("CDN 下载失败: {e}"))?;
+    if !dl_resp.status().is_success() {
+        return Err(format!("CDN 下载失败 (HTTP {})", dl_resp.status()));
+    }
+    let total_bytes = dl_resp.content_length().unwrap_or(expected_size);
+
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(&archive_path)
+            .await
+            .map_err(|e| format!("创建临时文件失败: {e}"))?;
+        let mut stream = dl_resp.bytes_stream();
+        let mut downloaded: u64 = 0;
+        let mut last_progress: u32 = 15;
+        use futures_util::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("下载中断: {e}"))?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("写入失败: {e}"))?;
+            downloaded += chunk.len() as u64;
+            if total_bytes > 0 {
+                let pct = 15 + ((downloaded as f64 / total_bytes as f64) * 50.0) as u32;
+                if pct > last_progress {
+                    last_progress = pct;
+                    let _ = app.emit("upgrade-progress", pct.min(65));
+                }
+            }
+        }
+        file.flush()
+            .await
+            .map_err(|e| format!("刷新文件失败: {e}"))?;
+    }
+
+    let _ = app.emit("upgrade-log", "下载完成，校验中...");
+    let _ = app.emit("upgrade-progress", 68);
+
+    // 4. SHA256 校验
+    if !expected_sha.is_empty() {
+        let file_bytes = std::fs::read(&archive_path).map_err(|e| format!("读取归档失败: {e}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&file_bytes);
+        let actual_sha = format!("{:x}", hasher.finalize());
+        if actual_sha != expected_sha {
+            let _ = std::fs::remove_file(&archive_path);
+            return Err(format!(
+                "SHA256 校验失败: 期望 {expected_sha}, 实际 {actual_sha}"
+            ));
+        }
+        let _ = app.emit("upgrade-log", "SHA256 校验通过 ✓");
+    }
+
+    let _ = app.emit("upgrade-progress", 72);
+
+    // 5. 解压到 npm 全局 node_modules 目录
+    let modules_dir = npm_global_modules_dir().ok_or("无法确定 npm 全局 node_modules 目录")?;
+    if !modules_dir.exists() {
+        std::fs::create_dir_all(&modules_dir)
+            .map_err(|e| format!("创建 node_modules 目录失败: {e}"))?;
+    }
+
+    let _ = app.emit("upgrade-log", format!("解压到 {}", modules_dir.display()));
+
+    // 清理旧的 @qingchencloud 目录（如果存在）
+    let qc_dir = modules_dir.join("@qingchencloud");
+    if qc_dir.exists() {
+        let _ = std::fs::remove_dir_all(&qc_dir);
+    }
+
+    // 解压 tgz
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let status = Command::new("tar")
+            .args([
+                "-xzf",
+                &archive_path.to_string_lossy(),
+                "-C",
+                &modules_dir.to_string_lossy(),
+            ])
+            .creation_flags(0x08000000)
+            .status()
+            .map_err(|e| format!("解压失败: {e}"))?;
+        if !status.success() {
+            return Err("tar 解压失败".into());
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let status = Command::new("tar")
+            .args([
+                "-xzf",
+                &archive_path.to_string_lossy(),
+                "-C",
+                &modules_dir.to_string_lossy(),
+            ])
+            .status()
+            .map_err(|e| format!("解压失败: {e}"))?;
+        if !status.success() {
+            return Err("tar 解压失败".into());
+        }
+    }
+
+    let _ = app.emit("upgrade-progress", 85);
+    let _ = app.emit("upgrade-log", "解压完成，创建 bin 链接...");
+
+    // 6. 创建 bin 链接
+    let bin_dir = npm_global_bin_dir().ok_or("无法确定 npm bin 目录")?;
+    let openclaw_js = modules_dir
+        .join("@qingchencloud")
+        .join("openclaw-zh")
+        .join("bin")
+        .join("openclaw.js");
+
+    if openclaw_js.exists() {
+        #[cfg(target_os = "windows")]
+        {
+            // Windows: 创建 .cmd 包装脚本
+            let cmd_path = bin_dir.join("openclaw.cmd");
+            let cmd_content = format!(
+                "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"{}\" %*\r\n",
+                openclaw_js.display()
+            );
+            std::fs::write(&cmd_path, cmd_content)
+                .map_err(|e| format!("创建 openclaw.cmd 失败: {e}"))?;
+            // 也创建 .ps1 版本
+            let ps1_path = bin_dir.join("openclaw.ps1");
+            let ps1_content = format!(
+                "#!/usr/bin/env pwsh\r\n$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\r\n\r\n$exe=\"\"\r\nif ($PSVersionTable.PSVersion -lt \"6.0\" -or $IsWindows) {{\r\n  $exe=\".exe\"\r\n}}\r\n$ret=0\r\nif (Test-Path \"$basedir/node$exe\") {{\r\n  if ($MyInvocation.ExpectingInput) {{\r\n    $input | & \"$basedir/node$exe\"  \"{}\" $args\r\n  }} else {{\r\n    & \"$basedir/node$exe\"  \"{}\" $args\r\n  }}\r\n  $ret=$LASTEXITCODE\r\n}} else {{\r\n  if ($MyInvocation.ExpectingInput) {{\r\n    $input | & \"node$exe\"  \"{}\" $args\r\n  }} else {{\r\n    & \"node$exe\"  \"{}\" $args\r\n  }}\r\n  $ret=$LASTEXITCODE\r\n}}\r\nexit $ret\r\n",
+                openclaw_js.display(), openclaw_js.display(), openclaw_js.display(), openclaw_js.display()
+            );
+            let _ = std::fs::write(&ps1_path, ps1_content);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Unix: 创建 symlink
+            let link_path = bin_dir.join("openclaw");
+            let _ = std::fs::remove_file(&link_path);
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&openclaw_js, &link_path)
+                    .map_err(|e| format!("创建 symlink 失败: {e}"))?;
+                // 确保可执行权限
+                let _ = Command::new("chmod")
+                    .args(["+x", &openclaw_js.to_string_lossy()])
+                    .status();
+                let _ = Command::new("chmod")
+                    .args(["+x", &link_path.to_string_lossy()])
+                    .status();
+            }
+        }
+        let _ = app.emit("upgrade-log", "bin 链接已创建 ✓");
+    } else {
+        let _ = app.emit("upgrade-log", "⚠️ openclaw.js 未找到，bin 链接跳过");
+    }
+
+    // 清理临时文件
+    let _ = std::fs::remove_file(&archive_path);
+
+    let _ = app.emit("upgrade-progress", 95);
+    Ok(cdn_version.to_string())
+}
+
 async fn upgrade_openclaw_inner(
     app: tauri::AppHandle,
     source: String,
@@ -882,6 +1250,29 @@ async fn upgrade_openclaw_inner(
         .or(recommended_version.as_deref())
         .unwrap_or("latest");
     let pkg = format!("{}@{}", pkg_name, ver);
+
+    // ── R2 CDN 加速：优先尝试从 CDN 下载预装归档 ──
+    if source != "official" {
+        // 目前仅汉化版支持 R2 加速
+        match try_r2_install(&app, ver, &source).await {
+            Ok(installed_ver) => {
+                let _ = app.emit("upgrade-progress", 100);
+                // 刷新缓存
+                super::refresh_enhanced_path();
+                crate::commands::service::invalidate_cli_detection_cache();
+                let msg = format!("✅ CDN 加速安装完成，当前版本: {installed_ver}");
+                let _ = app.emit("upgrade-log", &msg);
+                return Ok(msg);
+            }
+            Err(reason) => {
+                let _ = app.emit(
+                    "upgrade-log",
+                    format!("CDN 加速不可用（{reason}），降级到 npm 安装..."),
+                );
+                let _ = app.emit("upgrade-progress", 5);
+            }
+        }
+    }
 
     // 切换源时需要卸载旧包，但为避免安装失败导致 CLI 丢失，
     // 先安装新包，成功后再卸载旧包
