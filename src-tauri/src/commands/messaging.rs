@@ -2534,10 +2534,13 @@ pub async fn install_channel_plugin(
 
     let stderr = child.stderr.take();
     let app2 = app.clone();
+    let stderr_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let stderr_clone = stderr_lines.clone();
     let handle = std::thread::spawn(move || {
         if let Some(pipe) = stderr {
             for line in BufReader::new(pipe).lines().map_while(Result::ok) {
                 let _ = app2.emit("plugin-log", &line);
+                stderr_clone.lock().unwrap().push(line);
             }
         }
     });
@@ -2561,6 +2564,23 @@ pub async fn install_channel_plugin(
         .wait()
         .map_err(|e| format!("等待安装进程失败: {}", e))?;
     if !status.success() {
+        let all_stderr = stderr_lines.lock().unwrap().join("\n");
+        let is_host_version_issue = all_stderr.contains("minHostVersion")
+            || all_stderr.contains("minimum host version")
+            || all_stderr.contains("requires OpenClaw")
+            || all_stderr.contains("host version");
+        if is_host_version_issue {
+            let _ = app.emit(
+                "plugin-log",
+                "⚠ 插件要求更高版本的 OpenClaw（minHostVersion 不满足）",
+            );
+            let _ = app.emit("plugin-log", "请先升级 OpenClaw 到最新版，再安装此插件：");
+            let _ = app.emit(
+                "plugin-log",
+                "  前往「服务管理」页面点击升级，或在终端执行：",
+            );
+            let _ = app.emit("plugin-log", "  npm i -g @qingchencloud/openclaw-zh@latest --registry https://registry.npmmirror.com");
+        }
         let rollback_err =
             cleanup_failed_plugin_install(plugin_id, had_existing_plugin, had_existing_config)
                 .err()
@@ -2569,6 +2589,9 @@ pub async fn install_channel_plugin(
             "plugin-log",
             format!("插件 {} 安装失败，已回退", package_name),
         );
+        if is_host_version_issue {
+            return Err("插件安装失败：当前 OpenClaw 版本过低，请先升级后重试".into());
+        }
         return if rollback_err.is_empty() {
             Err(format!("插件安装失败：{}", package_name))
         } else {
@@ -2742,10 +2765,28 @@ pub async fn install_qqbot_plugin(app: tauri::AppHandle) -> Result<String, Strin
     }
 
     if !status.success() {
-        let _ = app.emit(
-            "plugin-log",
-            "openclaw plugins install 未成功结束，正在回退",
-        );
+        let all_stderr = qqbot_stderr_lines.lock().unwrap().join("\n");
+        let is_host_version_issue = all_stderr.contains("minHostVersion")
+            || all_stderr.contains("minimum host version")
+            || all_stderr.contains("requires OpenClaw")
+            || all_stderr.contains("host version");
+        if is_host_version_issue {
+            let _ = app.emit(
+                "plugin-log",
+                "⚠ 插件要求更高版本的 OpenClaw（minHostVersion 不满足）",
+            );
+            let _ = app.emit("plugin-log", "请先升级 OpenClaw 到最新版，再安装此插件：");
+            let _ = app.emit(
+                "plugin-log",
+                "  前往「服务管理」页面点击升级，或在终端执行：",
+            );
+            let _ = app.emit("plugin-log", "  npm i -g @qingchencloud/openclaw-zh@latest --registry https://registry.npmmirror.com");
+        } else {
+            let _ = app.emit(
+                "plugin-log",
+                "openclaw plugins install 未成功结束，正在回退",
+            );
+        }
         let _ = cleanup_failed_extension_install(
             &plugin_dir,
             &plugin_backup,
@@ -2754,6 +2795,9 @@ pub async fn install_qqbot_plugin(app: tauri::AppHandle) -> Result<String, Strin
             had_existing_config,
         );
         let _ = app.emit("plugin-progress", 100);
+        if is_host_version_issue {
+            return Err("插件安装失败：当前 OpenClaw 版本过低，请先升级后重试".into());
+        }
         return Err("QQ 插件安装失败：openclaw plugins install 进程退出码非零".into());
     }
 
