@@ -1102,7 +1102,7 @@ pub async fn check_weixin_plugin_status() -> Result<Value, String> {
                     .ok()?;
                 let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 raw.split_whitespace()
-                    .find(|w| w.chars().next().map_or(false, |c| c.is_ascii_digit()))
+                    .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
                     .map(String::from)
             })
             .unwrap_or_default();
@@ -1152,7 +1152,7 @@ pub async fn run_channel_action(
     if platform == "weixin" && action == "install" {
         // 微信 CLI 版本号独立于 OpenClaw（1.0.x / 2.0.x），不能用 OpenClaw 版本号 pin
         // v2.0.1 需要 OpenClaw >= 2026.3.22 的 SDK，旧版用 v1.0.3（最后兼容版）
-        let weixin_spec = if version.as_deref().map_or(false, |v| !v.is_empty()) {
+        let weixin_spec = if version.as_deref().is_some_and(|v| !v.is_empty()) {
             format!(
                 "@tencent-weixin/openclaw-weixin-cli@{}",
                 version.as_deref().unwrap()
@@ -1168,7 +1168,7 @@ pub async fn run_channel_action(
                     let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     // 输出格式: "OpenClaw 2026.3.24 (hash)" → 取第二个词（版本号）
                     raw.split_whitespace()
-                        .find(|w| w.chars().next().map_or(false, |c| c.is_ascii_digit()))
+                        .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
                         .map(String::from)
                 })
                 .unwrap_or_default();

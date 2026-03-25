@@ -1278,7 +1278,7 @@ async fn get_local_version() -> Option<String> {
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
     // 输出格式: "OpenClaw 2026.3.24 (hash)" → 取第一个数字开头的词（版本号）
     raw.split_whitespace()
-        .find(|w| w.chars().next().map_or(false, |c| c.is_ascii_digit()))
+        .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
         .map(String::from)
 }
 
