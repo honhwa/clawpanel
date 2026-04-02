@@ -5,21 +5,37 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.11.0] - 2026-03-31
+## [0.11.0] - 2026-04-02
 
 ### 新功能 (Features)
 
-- **本地版本准备** — ClawPanel 程序版本已对齐到 `0.11.0`，同步覆盖 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 与 `docs/index.html`
-- **OpenClaw 3.28 策略映射** — 新增 `0.11.0` → 官方版 `2026.3.28` / 汉化版 `2026.3.28-zh.2` 的推荐稳定版映射，同时保留 `0.9.x` 旧客户端的保守推荐策略
+- **聊天文件面板** — 实时聊天页面新增工作区文件面板，可浏览和管理 Agent 工作区文件
+- **渠道引导优化** — 改进渠道配置和初始设置引导流程，降低上手门槛
+- **配置校准修复** — 服务页面新增「继承修复」和「重置修复」两种配置校准模式，可一键修复 openclaw.json 配置异常
+- **MiniMax 模型预设** — 新增 MiniMax M2.7 / M2.5 系列模型预设，更新 API 地址到 api.minimax.io (#163)
+- **OpenClaw 3.28 策略映射** — 新增 `0.11.0` → 官方版 `2026.3.28` / 汉化版 `2026.3.28-zh.2` 的推荐稳定版映射
 
 ### 修复 (Fixes)
 
-- **仪表盘运行态误导** — Dashboard 仅在 Gateway 运行时才请求 `getStatusSummary()`；Gateway 停止时清空旧缓存，并将 Web `file-read` 来源明确标注为 `openclaw.json / 本地安装`，避免把本地配置快照误读成运行态
-- **版本同步脚本** — `npm run version:set` / `npm run version:sync` 现在会一并同步 `package-lock.json`，避免程序版本与锁文件版本再次漂移
+- **Linux 安装权限** — 重构 Linux npm 全局安装提权机制：`sudo -E` 替换为 `pkexec` 图形密码对话框，降级到 `sudo --non-interactive`；自动检测 nvm/fnm/volta 用户目录跳过提权 (fixes #175)
+- **Gateway 死循环** — `_autoPairAndReconnect` 配对成功后不再调用 `reconnect()` 重置计数器，防止 origin not allowed 修复触发无限循环阻塞服务器 (fixes #160)
+- **readConfig 未定义** — Web 模式替换为内联 `fs.readFileSync/writeFileSync` (fixes #165)
+- **systemd PATH 缺失** — `findOpenclawBin` 添加 npm 全局路径，systemd 服务注入 PATH 环境变量 (fixes #156)
+- **Docker 双容器冲突** — 新增 `DISABLE_GATEWAY_SPAWN` 环境变量，禁止 ClawPanel 容器启动本地 Gateway (fixes #159)
+- **Gateway 检测冲突** — `linuxCheckGateway` 验证进程名，拒绝操作非 OpenClaw 进程 (fixes #151)
+- **版本源检测重构** — standalone 目录集中化、Windows .cmd shim 解析、Linux 检测补全，修复跨源切换后显示旧源的问题 (#161)
+- **汉化版检测兜底** — 版本号含 `-zh` 时强制判定为汉化版，不再依赖文件系统路径检测
+- **Gateway 状态误报** — 避免 PID 查找失败时错误报告 Gateway 已停止
+- **配置 profiles 污染** — 自动清理 `auth.profiles` / `agents.profiles` 等被误注入的字段
+- **仪表盘运行态误导** — Dashboard 仅在 Gateway 运行时才请求状态摘要，停止时清空旧缓存
+- **确认弹窗溢出** — 修复内容过长时确认对话框溢出的样式问题
+- **版本同步脚本** — `npm run version:set` 现在会一并同步 `package-lock.json`
 
 ### 改进 (Improvements)
 
-- **维护文档** — 更新 `docs/version-maintenance.md` 与 `docs/openclaw-2026-3-28-compatibility.md`，补齐 `0.11.0` 维护要点、旧客户端兼容边界与当前 Web 写入链路结论
+- **Gateway 兼容性** — 改进 Gateway 协议兼容性和完善 i18n 清理
+- **维护文档** — 更新版本维护和 OpenClaw 3.28 兼容性文档
+- **README** — 新增升级/卸载教程，更新致谢列表（octo-patch, SEVENTEEN-TAN, roc-xie 等贡献者）
 
 ## [0.10.0] - 2026-03-26
 
