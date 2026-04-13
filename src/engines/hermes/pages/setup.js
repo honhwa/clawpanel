@@ -34,6 +34,8 @@ export function render() {
   let logs = []
   let installing = false
   let installError = null
+  let installMode = 'local' // 'local' | 'custom'
+  let customGatewayUrl = 'http://127.0.0.1:8642'
   let progress = 0
   let unlisten = null
 
@@ -130,6 +132,46 @@ export function render() {
 
   // --- 安装阶段 ---
   function renderInstall() {
+    // 模式切换按钮
+    const modeSwitch = `
+      <div style="display:flex;gap:8px;margin-bottom:20px">
+        <button class="btn btn-sm hermes-mode-btn ${installMode === 'local' ? 'btn-primary' : 'btn-secondary'}" data-mode="local">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align:-2px"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          ${t('engine.installModeLocal')}
+        </button>
+        <button class="btn btn-sm hermes-mode-btn ${installMode === 'custom' ? 'btn-primary' : 'btn-secondary'}" data-mode="custom">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align:-2px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+          ${t('engine.installModeCustom')}
+        </button>
+      </div>`
+
+    if (installMode === 'custom') {
+      // 自定义模式：输入已有 Gateway 地址
+      return `<div class="card" style="margin-bottom:16px">
+        <div class="card-body" style="padding:24px">
+          <h3 style="margin:0 0 4px;font-size:16px">${t('engine.installTitle')}</h3>
+          <p style="color:var(--text-secondary);margin:0 0 16px;font-size:13px">${t('engine.installCustomDesc')}</p>
+          ${modeSwitch}
+          ${installError ? `
+            <div style="margin-bottom:14px;padding:10px 14px;background:var(--error-bg, #fef2f2);border:1px solid var(--error, #ef4444);border-radius:var(--radius-sm,6px);font-size:13px;color:var(--error, #ef4444)">
+              ${esc(installError)}
+            </div>
+          ` : ''}
+          <div class="hermes-form">
+            <label class="hermes-field">
+              <span>Gateway URL</span>
+              <input type="text" id="hm-custom-url" class="input" placeholder="http://127.0.0.1:8642" value="${esc(customGatewayUrl)}">
+              <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px">${t('engine.installCustomHint')}</div>
+            </label>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:16px">
+            <button class="btn btn-primary hermes-custom-connect" ${installing ? 'disabled' : ''}>${installing ? ICONS.spinner + ' ' + t('engine.installCustomTesting') : t('engine.installCustomConnect')}</button>
+          </div>
+        </div>
+      </div>`
+    }
+
+    // 本地模式：一键安装
     const btnText = installing ? `${ICONS.spinner} ${t('engine.installingBtn')}` : `${ICONS.rocket} ${t('engine.installBtn')}`
     const btnDisabled = installing ? 'disabled' : ''
 
@@ -174,6 +216,7 @@ export function render() {
       <div class="card-body" style="padding:24px">
         <h3 style="margin:0 0 4px;font-size:16px">${t('engine.installTitle')}</h3>
         <p style="color:var(--text-secondary);margin:0 0 16px;font-size:13px">${t('engine.installDescSimple')}</p>
+        ${modeSwitch}
         ${errorBlock}
         ${progressBlock}
         <div style="display:flex;gap:10px;align-items:center;margin-top:16px">
@@ -274,8 +317,21 @@ export function render() {
         draw()
       })
     })
-    // 安装按钮
+    // 安装模式切换
+    el.querySelectorAll('.hermes-mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mode
+        if (mode && mode !== installMode) {
+          installMode = mode
+          installError = null
+          draw()
+        }
+      })
+    })
+    // 安装按钮（本地模式）
     el.querySelector('.hermes-install-btn')?.addEventListener('click', doInstall)
+    // 自定义连接按钮
+    el.querySelector('.hermes-custom-connect')?.addEventListener('click', doCustomConnect)
     // 服务商预设按钮
     el.querySelectorAll('.hermes-preset-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -362,6 +418,39 @@ export function render() {
     } catch (e) {
       logs.push(`检测错误: ${e}`)
       phase = 'install'
+      draw()
+    }
+  }
+
+  // --- 自定义连接流程 ---
+  async function doCustomConnect() {
+    const urlInput = el.querySelector('#hm-custom-url')
+    const url = urlInput?.value?.trim()
+    if (!url) { installError = t('engine.installCustomEmpty'); draw(); return }
+
+    // 基础 URL 格式检查
+    try { new URL(url) } catch { installError = t('engine.installCustomInvalidUrl'); draw(); return }
+
+    installing = true
+    installError = null
+    draw()
+
+    try {
+      // 保存 Gateway URL
+      await api.hermesSetGatewayUrl(url)
+
+      // 测试连接
+      const health = await api.hermesHealthCheck()
+      if (!health) throw new Error(t('engine.installCustomNoResponse'))
+
+      installing = false
+      customGatewayUrl = url
+      // 连接成功，跳到配置步骤
+      phase = 'configure'
+      draw()
+    } catch (e) {
+      installing = false
+      installError = t('engine.installCustomFailed', { error: e.message || e })
       draw()
     }
   }
