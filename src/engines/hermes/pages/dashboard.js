@@ -279,12 +279,6 @@ export function render() {
             <span style="font-size:14px;font-weight:500">${t('engine.dashOpenChat')}</span>
           </div>
         </button>
-        <button class="card hm-dash-link" data-route="/h/cron" style="cursor:pointer;border:none;text-align:left">
-          <div class="card-body" style="padding:16px;display:flex;align-items:center;gap:10px">
-            ${ICONS.cron}
-            <span style="font-size:14px;font-weight:500">${t('engine.dashOpenCron')}</span>
-          </div>
-        </button>
         <button class="card hm-dash-link" data-route="/h/setup" style="cursor:pointer;border:none;text-align:left">
           <div class="card-body" style="padding:16px;display:flex;align-items:center;gap:10px">
             ${ICONS.config}
