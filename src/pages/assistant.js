@@ -1353,6 +1353,30 @@ function processQueue() {
   sendMessageDirect(next.text)
 }
 
+// ── 本地文件路径检测（Fix #226）──
+// 用于拦截用户意外粘贴/拖拽本地文件路径（而非图片内容本身）的场景
+// 例如：C:\Users\x\img.png、/Users/x/img.png、file:///C:/img.png 等
+// 这类字符串发送到 LLM 会触发 "Only base64/http/https URLs are supported" 错误
+const LOCAL_PATH_PREFIX_RE = /^(?:[a-zA-Z]:[\\/]|\/(?:Users|home|mnt|media|opt|tmp|var|root)\/|file:\/\/)/i
+// 匹配 markdown 图片语法中的本地路径：![alt](C:\...)、![alt](/Users/...)
+const LOCAL_PATH_MD_IMG_RE = /!\[[^\]]*\]\((\s*(?:[a-zA-Z]:[\\/]|\/(?:Users|home|mnt|media|opt|tmp|var|root)\/|file:\/\/)[^)]+)\)/gi
+
+function isLocalPathText(text) {
+  if (!text) return false
+  const trimmed = String(text).trim()
+  if (!trimmed) return false
+  // 多行粘贴：首行若匹配本地路径即视为路径
+  const firstLine = trimmed.split(/\r?\n/)[0].trim()
+  return LOCAL_PATH_PREFIX_RE.test(firstLine)
+}
+
+// 在发送给 LLM 之前清洗用户消息中的本地路径 markdown 图片引用
+// LLM 不能访问本地文件，把路径替换为占位文本避免 API 报错
+function sanitizeUserTextForApi(text) {
+  if (!text || typeof text !== 'string') return text
+  return text.replace(LOCAL_PATH_MD_IMG_RE, t('assistant.localPathSanitized'))
+}
+
 // ── 图片附件 ──
 const MAX_IMAGE_SIZE = 4 * 1024 * 1024 // 4MB
 const MAX_IMAGE_DIM = 2048 // 最大边长
@@ -1429,9 +1453,11 @@ function clearPendingImages() {
 
 // 构建多模态消息 content
 function buildMessageContent(text, images) {
-  if (!images || images.length === 0) return text
+  // Fix #226: 清洗 markdown 图片语法中的本地路径（LLM 无法访问）
+  const sanitizedText = sanitizeUserTextForApi(text)
+  if (!images || images.length === 0) return sanitizedText
   const parts = []
-  if (text) parts.push({ type: 'text', text })
+  if (sanitizedText) parts.push({ type: 'text', text: sanitizedText })
   for (const img of images) {
     parts.push({
       type: 'image_url',
@@ -4434,7 +4460,13 @@ export async function render() {
         hasImage = true
       }
     }
-    if (hasImage) e.preventDefault()
+    if (hasImage) { e.preventDefault(); return }
+    // Fix #226: 拦截纯文本的本地文件路径粘贴（LLM 无法访问本地文件）
+    const pastedText = e.clipboardData?.getData('text/plain') || ''
+    if (isLocalPathText(pastedText)) {
+      e.preventDefault()
+      toast(t('assistant.localPathBlocked'), 'warn')
+    }
   })
 
   // 拖拽图片
@@ -4449,7 +4481,16 @@ export async function render() {
   mainEl.addEventListener('drop', (e) => {
     e.preventDefault()
     mainEl.classList.remove('ast-drag-over')
-    for (const file of e.dataTransfer.files) addImageFromFile(file)
+    // Fix #226: 拖拽路径文本（而非图片文件）时拦截
+    const droppedFiles = e.dataTransfer?.files
+    if (!droppedFiles || droppedFiles.length === 0) {
+      const droppedText = e.dataTransfer?.getData('text/plain') || e.dataTransfer?.getData('text/uri-list') || ''
+      if (isLocalPathText(droppedText)) {
+        toast(t('assistant.localPathBlocked'), 'warn')
+      }
+      return
+    }
+    for (const file of droppedFiles) addImageFromFile(file)
   })
 
   // 图片预览删除
