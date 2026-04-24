@@ -6692,6 +6692,11 @@ const handlers = {
     const enhanced = hermesEnhancedPath()
     const port = hermesGatewayPort()
     if (action === 'start') {
+      // Guardian: ensure platforms.api_server.enabled:true before start.
+      // Mirrors Rust's ensure_api_server_enabled (see hermes.rs).
+      try { this._hermesEnsureApiServerEnabled() } catch (e) {
+        console.warn('[hermes guardian] patch failed:', e.message || e)
+      }
       // 检测是否已运行
       const alive = await _tcpProbe('127.0.0.1', port, 300)
       if (alive) return 'Gateway 已在运行'
@@ -6843,6 +6848,98 @@ const handlers = {
   // Hermes providers" message in setup.js.
   hermes_list_providers() {
     return []
+  },
+
+  // -----------------------------------------------------------------------
+  // api_server guardian (Step 5) — mirror of Rust's config_has_api_server_enabled
+  // + patch_yaml_ensure_api_server + ensure_api_server_enabled. Called before
+  // every `hermes gateway run` so that an upgrade / manual edit that drops
+  // `platforms.api_server.enabled: true` is auto-healed.
+  // -----------------------------------------------------------------------
+  _hermesConfigHasApiServerEnabled(raw) {
+    let inPlatforms = false
+    let inApiServer = false
+    for (const origLine of raw.split('\n')) {
+      const hash = origLine.indexOf('#')
+      const line = hash >= 0 ? origLine.slice(0, hash) : origLine
+      const trimmed = line.replace(/\s+$/, '')
+      if (!trimmed) continue
+      const indent = trimmed.length - trimmed.trimStart().length
+      if (indent === 0) {
+        inPlatforms = trimmed.trimStart().startsWith('platforms:')
+        inApiServer = false
+        continue
+      }
+      if (!inPlatforms) continue
+      if (indent <= 2) {
+        inApiServer = trimmed.trimStart().startsWith('api_server:')
+        continue
+      }
+      if (!inApiServer) continue
+      const t = trimmed.trimStart()
+      if (t.startsWith('enabled:')) {
+        const v = t.slice(8).trim().replace(/^['"]|['"]$/g, '').toLowerCase()
+        return ['true', 'yes', 'on', '1'].includes(v)
+      }
+    }
+    return false
+  },
+
+  _hermesPatchYamlEnsureApiServer(raw) {
+    if (this._hermesConfigHasApiServerEnabled(raw)) return raw
+    const lines = raw.split('\n')
+    const out = []
+    let platformsFound = false
+    let i = 0
+    while (i < lines.length) {
+      const line = lines[i]
+      const trimmed = line.replace(/\s+$/, '')
+      const indent = trimmed.length - trimmed.trimStart().length
+      if (indent === 0 && trimmed.trimStart().startsWith('platforms:')) {
+        out.push(line)
+        platformsFound = true
+        i++
+        const accumulated = []
+        let skipping = false
+        while (i < lines.length) {
+          const l = lines[i]
+          const t = l.replace(/\s+$/, '')
+          const ind = t.length - t.trimStart().length
+          if (ind === 0 && t !== '') break
+          if (ind <= 2) skipping = t.trimStart().startsWith('api_server:')
+          if (!skipping) accumulated.push(l)
+          i++
+        }
+        out.push('  api_server:')
+        out.push('    enabled: true')
+        out.push(...accumulated)
+        continue
+      }
+      out.push(line)
+      i++
+    }
+    if (!platformsFound) {
+      if (out.length && out[out.length - 1] !== '') out.push('')
+      out.push('platforms:')
+      out.push('  api_server:')
+      out.push('    enabled: true')
+    }
+    let content = out.join('\n')
+    if (!content.endsWith('\n')) content += '\n'
+    return content
+  },
+
+  _hermesEnsureApiServerEnabled() {
+    const configPath = path.join(hermesHome(), 'config.yaml')
+    if (!fs.existsSync(configPath)) return
+    const raw = fs.readFileSync(configPath, 'utf8')
+    if (this._hermesConfigHasApiServerEnabled(raw)) return
+    const ts = Math.floor(Date.now() / 1000)
+    const backupPath = configPath + `.bak-${ts}`
+    try { fs.writeFileSync(backupPath, raw) } catch {}
+    const patched = this._hermesPatchYamlEnsureApiServer(raw)
+    fs.writeFileSync(configPath, patched)
+    console.warn(`[hermes guardian] patched config.yaml (api_server.enabled). Backup: ${backupPath}`)
   },
 
   // =========================================================================

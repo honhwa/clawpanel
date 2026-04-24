@@ -583,6 +583,14 @@ export function render() {
         showGwMsg(evt.payload || '', false)
       })
       unlisteners.push(unlisten2)
+
+      // 监听 config.yaml 自愈事件（api_server guardian）
+      const unlisten3 = await tauriListen('hermes-config-patched', async (evt) => {
+        const { toast } = await import('../../../components/toast.js')
+        const msg = evt?.payload?.message || 'config.yaml 已自动修复'
+        toast(msg, 'info', { duration: 6000 })
+      })
+      unlisteners.push(unlisten3)
     } catch (_) {
       // Web 模式下无 Tauri 事件，静默忽略
     }
