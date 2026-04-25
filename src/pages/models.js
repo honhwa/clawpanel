@@ -59,7 +59,7 @@ export async function render() {
   `
 
   const state = { config: null, search: '', undoStack: [] }
-  // 非阻塞：先返回 DOM，后台加载数据
+  // 非阻塞:先返回 DOM,后台加载数据
   loadConfig(page, state)
   bindTopActions(page, state)
 
@@ -76,12 +76,12 @@ async function loadConfig(page, state) {
   const listEl = page.querySelector('#providers-list')
   try {
     state.config = await api.readOpenclawConfig()
-    // 自动修复现有配置中的 baseUrl（如 Ollama 缺少 /v1），一次性迁移
+    // 自动修复现有配置中的 baseUrl(如 Ollama 缺少 /v1),一次性迁移
     const before = JSON.stringify(state.config?.models?.providers || {})
     normalizeProviderUrls(state.config)
     const after = JSON.stringify(state.config?.models?.providers || {})
     if (before !== after) {
-      console.log('[models] 自动修复了服务商 baseUrl，正在保存...')
+      console.log('[models] 自动修复了服务商 baseUrl,正在保存...')
       await api.writeOpenclawConfig(state.config)
       toast(t('models.autoFixUrl'), 'info')
     }
@@ -97,6 +97,16 @@ function getCurrentPrimary(config) {
   return config?.agents?.defaults?.model?.primary || ''
 }
 
+function ensureDefaultModelConfig(state) {
+  if (!state.config.agents) state.config.agents = {}
+  if (!state.config.agents.defaults) state.config.agents.defaults = {}
+  if (!state.config.agents.defaults.model) state.config.agents.defaults.model = {}
+  if (!Array.isArray(state.config.agents.defaults.model.fallbacks)) {
+    state.config.agents.defaults.model.fallbacks = []
+  }
+  return state.config.agents.defaults.model
+}
+
 function collectAllModels(config) {
   const result = []
   const providers = config?.models?.providers || {}
@@ -106,7 +116,7 @@ function collectAllModels(config) {
       if (id) result.push({ provider: pk, modelId: id, full: `${pk}/${id}` })
     }
   }
-  return result
+  return resul
 }
 
 function getApiTypeLabel(apiType) {
@@ -117,25 +127,278 @@ function getApiTypeLabel(apiType) {
 function renderDefaultBar(page, state) {
   const bar = page.querySelector('#default-model-bar')
   const primary = getCurrentPrimary(state.config)
-  const allModels = collectAllModels(state.config)
-  const fallbacks = allModels.filter(m => m.full !== primary).map(m => m.full)
+  const fallbacks = state.config?.agents?.defaults?.model?.fallbacks || []
+  const collapsed = !state.showFallbackEditor
+  const chevron = collapsed ? '▸' : '▾'
 
   bar.innerHTML = `
-    <div class="config-section" style="margin-bottom:var(--space-lg)">
-      <div class="config-section-title">${t('models.currentConfig')}</div>
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div>
-          <span style="font-size:var(--font-size-sm);color:var(--text-tertiary)">${t('models.primaryModelLabel')}</span>
-          <span style="font-family:var(--font-mono);font-size:var(--font-size-sm);color:${primary ? 'var(--success)' : 'var(--error)'}">${primary || t('models.notConfigured')}</span>
-        </div>
-        <div>
-          <span style="font-size:var(--font-size-sm);color:var(--text-tertiary)">${t('models.fallbackModels')}</span>
-          <span style="font-size:var(--font-size-sm);color:var(--text-secondary)">${fallbacks.length ? fallbacks.join(', ') : t('models.fallbackNone')}</span>
+    <div class="config-section" style="margin-bottom:var(--space-lg); transition: all 0.3s ease;">
+      <div class="config-section-title" id="system-model-title" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none;">
+        <div style="display:flex; align-items:center; gap:8px">
+          <span style="display:inline-block;width:16px;font-size:12px;color:var(--text-tertiary)">${chevron}</span>
+          <span>${t('models.systemModelTitle')}</span>
+          <div style="display:flex; gap:8px; margin-left: 12px; align-items: baseline; flex: 1; min-width: 0; overflow: hidden;">
+            <span style="color:var(--success); font-family:var(--font-mono); font-size: 0.9em; font-weight: 500; white-space: nowrap;">${primary || t('models.notConfigured')}</span>
+            <span style="font-size: 11px; color: var(--text-tertiary); font-weight: normal; white-space: nowrap;">${t('models.nFallbacks', { count: fallbacks.length })}</span>
+          </div>
         </div>
       </div>
-      <div class="form-hint" style="margin-top:6px">${t('models.fallbackHint')}</div>
+
+      ${collapsed && fallbacks.length > 0 ? `
+      <div style="margin-top: 12px; display: flex; flex-wrap: nowrap; overflow: hidden; gap: 6px; align-items: center; padding-left: 24px;">
+        ${fallbacks.map(f => `<span style="background: var(--bg-tertiary); border: 1px solid var(--border-color); padding: 2px 8px; border-radius: 12px; font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px;" title="${f}">${f}</span>`).join('<span style="color: var(--text-tertiary); font-size: 10px; flex-shrink: 0;">→</span>')}
+      </div>
+      ` : ''}
+
+      <div id="fallback-waterfall-container" style="display:${state.showFallbackEditor ? 'block' : 'none'}; margin-top: 8px;">
+        ${renderFallbackWaterfall(state)}
+      </div>
+
+      ${collapsed ? '' : `<div class="form-hint" style="margin-top:8px">${t('models.fallbackHint')}</div>`}
     </div>
   `
+
+  // 绑定标题点击折叠/展开
+  bar.querySelector('#system-model-title').onclick = () => {
+    state.showFallbackEditor = !state.showFallbackEditor
+    renderDefaultBar(page, state)
+  }
+
+  if (state.showFallbackEditor) {
+    bindWaterfallActions(page, state)
+  }
+}
+
+function renderFallbackWaterfall(state) {
+  const primary = getCurrentPrimary(state.config)
+  const allModels = collectAllModels(state.config)
+  const currentFallbacks = state.config?.agents?.defaults?.model?.fallbacks || []
+
+  // 分组候选模型
+  const providers = state.config?.models?.providers || {}
+  const candidatesByProvider = {}
+  Object.keys(providers).forEach(pKey => {
+    const pModels = providers[pKey].models || []
+    const filtered = pModels.map(m => typeof m === 'string' ? m : m.id)
+      .filter(mId => {
+        const full = `${pKey}/${mId}`
+        return full !== primary && !currentFallbacks.includes(full)
+      })
+    if (filtered.length > 0) {
+      candidatesByProvider[pKey] = filtered
+    }
+  })
+
+  if (!state._fallback_candidates_collapsed) state._fallback_candidates_collapsed = {}
+
+  return `
+    <div class="fallback-editor-panel" style="background: var(--bg-secondary); padding: 12px; border-radius: var(--radius-md);">
+      <div style="margin-bottom: 12px; font-size: 11px; color: var(--text-secondary); background: var(--bg-info-subtle); padding: 6px 10px; border-radius: 4px; border-left: 3px solid var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+        ${t('models.bestPracticeHint')}
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1.2fr; gap: 24px;">
+        <div style="background: var(--bg-tertiary); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
+          <div style="font-size: var(--font-size-xs); font-weight: bold; margin-bottom: 8px; color: var(--text-tertiary);">${t('models.activeChainTitle')}</div>
+          <div id="active-fallback-list" style="display: flex; flex-direction: column; gap: 4px; min-height: 50px;">
+            ${currentFallbacks.map((f, i) => `
+              <div class="fallback-chain-item" data-id="${f}" style="display: flex; align-items: center; justify-content: space-between; background: var(--bg-primary); padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border-color);">
+                <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;">
+                  <span class="fallback-drag-handle" style="color:var(--text-tertiary);cursor:grab;user-select:none;font-size:14px;padding:2px; flex-shrink: 0;">⋮⋮</span>
+                  <span style="font-family: var(--font-mono); font-size: var(--font-size-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${i + 1}. ${f}</span>
+                </div>
+                <div style="display: flex; gap: 4px; flex-shrink: 0;">
+                  <button class="btn btn-xs btn-secondary btn-set-primary-from-fb" data-id="${f}" style="padding: 1px 4px; font-size: 10px;">${t('models.setAsPrimary')}</button>
+                  <button class="btn-icon btn-remove-fb" data-id="${f}" title="${t('models.remove')}">${icon('x', 12)}</button>
+                </div>
+              </div>
+            `).join('')}
+            ${currentFallbacks.length === 0 ? `<div style="font-size: 12px; color: var(--text-tertiary); text-align: center; padding: 20px; border: 1px dashed var(--border-color); border-radius: 4px;">${t('models.noFallbackSelected')}</div>` : ''}
+          </div>
+        </div>
+
+        <div style="background: var(--bg-tertiary); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
+          <div style="font-size: var(--font-size-xs); font-weight: bold; margin-bottom: 8px; color: var(--text-tertiary);">${t('models.candidatePoolTitle')}</div>
+          <div id="candidate-model-pool" style="display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; padding-right: 4px;">
+            ${Object.keys(candidatesByProvider).length === 0 ? `<div style="font-size: 12px; color: var(--text-tertiary); text-align: center; padding: 20px;">${t('models.noCandidateModel')}</div>` :
+              Object.keys(candidatesByProvider).map(pKey => {
+                const collapsed = !!state._fallback_candidates_collapsed[pKey]
+                const mIds = candidatesByProvider[pKey]
+                return `
+                  <div class="candidate-provider-group" data-provider="${pKey}">
+                    <div class="candidate-provider-header" style="display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg-tertiary); border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: bold; color: var(--text-secondary);">
+                      <span class="chevron">${collapsed ? '▸' : '▾'}</span>
+                      <span>${pKey}</span>
+                      <span style="margin-left: auto; color: var(--text-tertiary); font-weight: normal;">${mIds.length}</span>
+                    </div>
+                    <div class="candidate-provider-list" style="display: ${collapsed ? 'none' : 'flex'}; flex-direction: column; gap: 4px; padding: 4px 0 4px 12px;">
+                      ${mIds.map(mId => `
+                        <div class="candidate-item" style="display: flex; align-items: center; justify-content: space-between; background: var(--bg-primary); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border-color); opacity: 0.9;">
+                          <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${mId}</span>
+                          <button class="btn btn-xs btn-primary btn-add-fb" data-full="${pKey}/${mId}" style="padding: 1px 6px; font-size: 10px;">${t('models.add')}</button>
+                        </div>
+                      `).join('')}
+                    </div>
+                  </div>
+                `
+              }).join('')
+            }
+          </div>
+        </div>
+      </div>
+
+
+    </div>
+  `
+}
+
+function bindWaterfallActions(page, state) {
+  const container = page.querySelector('#fallback-waterfall-container')
+
+  // 移除
+  container.querySelectorAll('.btn-remove-fb').forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.id
+      const modelConfig = ensureDefaultModelConfig(state)
+      pushUndo(state)
+      modelConfig.fallbacks = modelConfig.fallbacks.filter(f => f !== id)
+      renderDefaultBar(page, state)
+      updateUndoBtn(page, state)
+      autoSave(state)
+    }
+  })
+
+  // 设为主用 (从备选链中提升)
+  container.querySelectorAll('.btn-set-primary-from-fb').forEach(btn => {
+    btn.onclick = () => {
+      const full = btn.dataset.id
+      const oldPrimary = getCurrentPrimary(state.config)
+      const fallbacks = state.config.agents.defaults.model.fallbacks || []
+
+      pushUndo(state)
+      // 1. 设置新主模型
+      setPrimary(state, full)
+      // 2. 将旧主模型放入备选链（原位置或末尾）
+      const newFallbacks = fallbacks.filter(f => f !== full)
+      if (oldPrimary) newFallbacks.push(oldPrimary)
+      state.config.agents.defaults.model.fallbacks = newFallbacks
+
+      renderDefaultBar(page, state)
+      updateUndoBtn(page, state)
+      autoSave(state)
+      toast(t('models.setAsPrimarySuccess', { model: full }), 'success')
+    }
+  })
+
+  // 加入
+  container.querySelectorAll('.btn-add-fb').forEach(btn => {
+    btn.onclick = () => {
+      const full = btn.dataset.full
+      const modelConfig = ensureDefaultModelConfig(state)
+      if (modelConfig.fallbacks.includes(full)) return
+      pushUndo(state)
+      modelConfig.fallbacks.push(full)
+      renderDefaultBar(page, state)
+      updateUndoBtn(page, state)
+      autoSave(state)
+    }
+  })
+
+  // 折叠候选服务商
+  container.querySelectorAll('.candidate-provider-header').forEach(header => {
+    header.onclick = () => {
+      const group = header.closest('.candidate-provider-group')
+      const pKey = group.dataset.provider
+      state._fallback_candidates_collapsed[pKey] = !state._fallback_candidates_collapsed[pKey]
+      renderDefaultBar(page, state)
+    }
+  })
+
+  // 拖拽排序逻辑 (适配当前列表)
+  const chainContainer = container.querySelector('#active-fallback-list')
+  if (chainContainer && state.config.agents.defaults.model.fallbacks?.length > 1) {
+    let dragged = null
+    let placeholder = null
+    let startY = 0
+
+    chainContainer.addEventListener('pointerdown', e => {
+      const handle = e.target.closest('.fallback-drag-handle')
+      if (!handle) return
+      const item = handle.closest('.fallback-chain-item')
+      if (!item) return
+
+      e.preventDefault()
+      dragged = item
+      startY = e.clientY
+
+      placeholder = document.createElement('div')
+      placeholder.style.cssText = `height:${item.offsetHeight}px;border:1px dashed var(--primary);border-radius:4px;margin-bottom:4px;background:var(--bg-tertiary)`
+      item.after(placeholder)
+
+      const rect = item.getBoundingClientRect()
+      item.style.position = 'fixed'
+      item.style.left = rect.left + 'px'
+      item.style.top = rect.top + 'px'
+      item.style.width = rect.width + 'px'
+      item.style.zIndex = '10000'
+      item.style.opacity = '0.9'
+      item.style.pointerEvents = 'none'
+      item.setPointerCapture(e.pointerId)
+    })
+
+    chainContainer.addEventListener('pointermove', e => {
+      if (!dragged || !placeholder) return
+      e.preventDefault()
+
+      const dy = e.clientY - startY
+      itemMove(dragged, dy)
+      startY = e.clientY
+
+      const siblings = [...chainContainer.querySelectorAll('.fallback-chain-item:not([style*="position: fixed"])')]
+      for (const sibling of siblings) {
+        const rect = sibling.getBoundingClientRect()
+        if (e.clientY < rect.top + rect.height / 2) {
+          sibling.before(placeholder)
+          return
+        }
+      }
+      if (siblings.length) siblings[siblings.length - 1].after(placeholder)
+    })
+
+    function itemMove(el, dy) {
+      const top = parseFloat(el.style.top)
+      el.style.top = (top + dy) + 'px'
+    }
+
+    chainContainer.addEventListener('pointerup', e => {
+      if (!dragged || !placeholder) return
+
+      dragged.style.position = ''
+      dragged.style.left = ''
+      dragged.style.top = ''
+      dragged.style.width = ''
+      dragged.style.zIndex = ''
+      dragged.style.opacity = ''
+      dragged.style.pointerEvents = ''
+
+      placeholder.before(dragged)
+      placeholder.remove()
+
+      // 更新顺序
+      const newOrderIds = [...chainContainer.querySelectorAll('.fallback-chain-item')].map(el => el.dataset.id)
+      const modelConfig = ensureDefaultModelConfig(state)
+      if (newOrderIds.join('\n') !== modelConfig.fallbacks.join('\n')) {
+        pushUndo(state)
+        modelConfig.fallbacks = newOrderIds
+        updateUndoBtn(page, state)
+        autoSave(state)
+      }
+
+      dragged = null
+      placeholder = null
+      renderDefaultBar(page, state) // 刷新索引数字
+    })
+  }
 }
 
 // 排序模型列表
@@ -190,7 +453,7 @@ function sortModels(models, sortBy) {
   return sorted
 }
 
-// 渲染服务商列表（渲染完后直接绑定事件）
+// 渲染服务商列表(渲染完后直接绑定事件)
 function renderProviders(page, state) {
   const listEl = page.querySelector('#providers-list')
   const providers = state.config?.models?.providers || {}
@@ -263,11 +526,11 @@ function renderProviders(page, state) {
     `
   }).join('')
 
-  // innerHTML 完成后，直接给每个按钮绑定 onclick
+  // innerHTML 完成后,直接给每个按钮绑定 onclick
   bindProviderButtons(listEl, page, state)
 }
 
-// 渲染模型卡片（支持搜索高亮和批量选择 checkbox）
+// 渲染模型卡片(支持搜索高亮和批量选择 checkbox)
 function renderModelCards(providerKey, models, primary, search) {
   if (!models.length) {
     return `<div style="color:var(--text-tertiary);font-size:var(--font-size-sm);padding:8px 0">${t('models.noModel')}</div>`
@@ -282,7 +545,7 @@ function renderModelCards(providerKey, models, primary, search) {
     const meta = []
     if (name !== id) meta.push(name)
     if (m.contextWindow) meta.push((m.contextWindow / 1000) + 'K ' + t('models.context'))
-    // 测试状态标签：成功显示耗时，失败显示不可用
+    // 测试状态标签:成功显示耗时,失败显示不可用
     let latencyTag = ''
     if (m.testStatus === 'fail') {
       latencyTag = `<span style="font-size:var(--font-size-xs);padding:1px 6px;border-radius:var(--radius-sm);background:var(--error-muted, #fee2e2);color:var(--error)" title="${(m.testError || '').replace(/"/g, '&quot;')}">${t('models.unavailable')}</span>`
@@ -335,7 +598,7 @@ function findModelIdx(provider, modelId) {
 
 // ===== 自动保存 + 撤销机制 =====
 
-// 保存快照到撤销栈（变更前调用）
+// 保存快照到撤销栈(变更前调用)
 function pushUndo(state) {
   state.undoStack.push(JSON.parse(JSON.stringify(state.config)))
   if (state.undoStack.length > 20) state.undoStack.shift()
@@ -368,7 +631,7 @@ function autoSave(state) {
   _saveTimer = setTimeout(() => doAutoSave(state), 300)
 }
 
-/** 已知的 API 类型错误→正确映射，自动修复用户手动编辑或旧版本配置 */
+/** 已知的 API 类型错误→正确映射,自动修复用户手动编辑或旧版本配置 */
 const API_TYPE_FIXES = {
   'google-gemini': 'google-generative-ai',
   'gemini': 'google-generative-ai',
@@ -379,7 +642,7 @@ const API_TYPE_FIXES = {
 }
 const VALID_API_TYPES = new Set(API_TYPES.map(t => t.value))
 
-/** 保存前规范化所有服务商的 baseUrl 和 API 类型，确保 Gateway 能正确调用 */
+/** 保存前规范化所有服务商的 baseUrl 和 API 类型,确保 Gateway 能正确调用 */
 function normalizeProviderUrls(config) {
   const providers = config?.models?.providers
   if (!providers) return
@@ -390,14 +653,14 @@ function normalizeProviderUrls(config) {
       if (API_TYPE_FIXES[lower]) {
         p.api = API_TYPE_FIXES[lower]
       } else if (!VALID_API_TYPES.has(lower)) {
-        console.warn(`[models] 未知 API 类型「${p.api}」，自动修正为 openai-completions`)
+        console.warn(`[models] 未知 API 类型「${p.api}」,自动修正为 openai-completions`)
         p.api = 'openai-completions'
       }
     }
 
     if (!p.baseUrl) continue
     let url = p.baseUrl.replace(/\/+$/, '')
-    // 去掉尾部的已知端点路径（用户可能粘贴了完整 URL）
+    // 去掉尾部的已知端点路径(用户可能粘贴了完整 URL)
     for (const suffix of ['/api/chat', '/api/generate', '/api/tags', '/api', '/chat/completions', '/completions', '/responses', '/messages', '/models']) {
       if (url.endsWith(suffix)) { url = url.slice(0, -suffix.length); break }
     }
@@ -406,15 +669,15 @@ function normalizeProviderUrls(config) {
     if (apiType === 'anthropic-messages') {
       if (!url.endsWith('/v1')) url += '/v1'
     } else if (apiType !== 'google-generative-ai' && apiType !== 'ollama') {
-      // Ollama OpenAI 兼容模式端口检测：11434 默认需要加 /v1（ollama 原生 API 不需要）
+      // Ollama OpenAI 兼容模式端口检测:11434 默认需要加 /v1(ollama 原生 API 不需要)
       if (/:11434$/.test(url) && !url.endsWith('/v1')) url += '/v1'
-      // 不再强制追加 /v1，尊重用户填写的 URL（火山引擎等第三方用 /v3 等路径）
+      // 不再强制追加 /v1,尊重用户填写的 URL(火山引擎等第三方用 /v3 等路径)
     }
     p.baseUrl = url
   }
 }
 
-// 仅保存配置，不重启 Gateway（用于测试结果等元数据持久化）
+// 仅保存配置,不重启 Gateway(用于测试结果等元数据持久化)
 async function saveConfigOnly(state) {
   try {
     const primary = getCurrentPrimary(state.config)
@@ -482,7 +745,7 @@ function updateUndoBtn(page, state) {
   btn.textContent = n ? t('models.undoN', { n }) : t('models.undo')
 }
 
-// 渲染完成后，直接给每个 [data-action] 按钮绑定 onclick
+// 渲染完成后,直接给每个 [data-action] 按钮绑定 onclick
 function bindProviderButtons(listEl, page, state) {
   // 绑定排序下拉框
   listEl.querySelectorAll('select[data-action="sort-models"]').forEach(select => {
@@ -500,7 +763,7 @@ function bindProviderButtons(listEl, page, state) {
         // 将排序固化到底层数据并保存
         pushUndo(state)
         provider.models = sortModels(provider.models, val)
-        // 恢复下拉框显示 "默认顺序"，因为新顺序已经变成了默认顺序
+        // 恢复下拉框显示 "默认顺序",因为新顺序已经变成了默认顺序
         state.sortBy = 'default'
         renderProviders(page, state)
         autoSave(state)
@@ -509,7 +772,7 @@ function bindProviderButtons(listEl, page, state) {
     }
   })
 
-  // 绑定拖拽排序（Pointer 事件实现，兼容 Tauri WebView2/WKWebView）
+  // 绑定拖拽排序(Pointer 事件实现,兼容 Tauri WebView2/WKWebView)
   listEl.querySelectorAll('.provider-models').forEach(container => {
     let dragged = null
     let placeholder = null
@@ -625,7 +888,7 @@ function bindProviderButtons(listEl, page, state) {
     if (!provider) return
     const card = btn.closest('.model-card')
 
-        // checkbox 改变时不需要阻止冒泡，由 handleAction 内部处理
+        // checkbox 改变时不需要阻止冒泡,由 handleAction 内部处理
     if (btn.type === 'checkbox') {
       btn.onchange = (e) => {
         handleAction(action, btn, card, section, providerKey, provider, page, state)
@@ -713,21 +976,18 @@ async function handleAction(action, btn, card, section, providerKey, provider, p
   }
 }
 
-// 设置主模型（仅修改 state，不写入文件）
+// 设置主模型(仅修改 state,不写入文件)
 function setPrimary(state, full) {
-  if (!state.config.agents) state.config.agents = {}
-  if (!state.config.agents.defaults) state.config.agents.defaults = {}
-  if (!state.config.agents.defaults.model) state.config.agents.defaults.model = {}
-  state.config.agents.defaults.model.primary = full
+  ensureDefaultModelConfig(state).primary = full
 }
 
-// 应用默认模型：primary + 其余自动成为备选
-// 确保 primary 指向的模型仍然存在，不存在则自动切到第一个可用模型
+// 应用默认模型:primary + 其余自动成为备选
+// 确保 primary 指向的模型仍然存在,不存在则自动切到第一个可用模型
 function ensureValidPrimary(state) {
   const primary = getCurrentPrimary(state.config)
   const allModels = collectAllModels(state.config)
   if (allModels.length === 0) {
-    // 所有模型都没了，清空 primary
+    // 所有模型都没了,清空 primary
     if (state.config.agents?.defaults?.model) {
       state.config.agents.defaults.model.primary = ''
     }
@@ -735,7 +995,7 @@ function ensureValidPrimary(state) {
   }
   const exists = allModels.some(m => m.full === primary)
   if (!exists) {
-    // primary 指向已删除的模型，自动切到第一个
+    // primary 指向已删除的模型,自动切到第一个
     const newPrimary = allModels[0].full
     setPrimary(state, newPrimary)
     toast(t('models.primaryAutoSwitch', { model: newPrimary }), 'info')
@@ -750,8 +1010,8 @@ function applyDefaultModel(state) {
   if (!defaults.model) defaults.model = {}
   defaults.model.primary = primary
 
-  // fallbacks / models 仅在为空时初始化（首次安装友好），不再每次保存都覆盖
-  // 避免用户精心维护的精简 fallback 链被重写，且随模型增多不断膨胀 (fixes #190)
+  // fallbacks / models 仅在为空时初始化(首次安装友好),不再每次保存都覆盖
+  // 避免用户精心维护的精简 fallback 链被重写,且随模型增多不断膨胀 (fixes #190)
   if (!defaults.model.fallbacks || defaults.model.fallbacks.length === 0) {
     const allModels = collectAllModels(state.config)
     defaults.model.fallbacks = allModels.filter(m => m.full !== primary).map(m => m.full)
@@ -764,9 +1024,9 @@ function applyDefaultModel(state) {
     defaults.models = modelsMap
   }
 
-  // 注意：不再强制同步到各 agent 的 model.primary
-  // 子 Agent 的模型覆盖是 OpenClaw 正常功能（用户可通过对话为不同 Agent 设置不同模型）
-  // 强制覆盖会导致 #142：重开 ClawPanel 后子 Agent 模型配置被重置
+  // 注意:不再强制同步到各 agent 的 model.primary
+  // 子 Agent 的模型覆盖是 OpenClaw 正常功能(用户可通过对话为不同 Agent 设置不同模型)
+  // 强制覆盖会导致 #142:重开 ClawPanel 后子 Agent 模型配置被重置
 }
 
 // 顶部按钮事件
@@ -774,7 +1034,7 @@ function bindTopActions(page, state) {
   page.querySelector('#btn-add-provider').onclick = () => addProvider(page, state)
   page.querySelector('#btn-undo').onclick = () => undo(page, state)
 
-  // 晴辰云：获取模型列表 → 弹窗让用户选择要添加的模型
+  // 晴辰云:获取模型列表 → 弹窗让用户选择要添加的模型
   page.querySelector('#btn-qtcool-oneclick').onclick = async () => {
     if (!state.config) { toast(t('models.configNotReady'), 'warning'); return }
 
@@ -889,7 +1149,7 @@ function bindTopActions(page, state) {
   }
 }
 
-// 添加服务商（带预设快捷选择）
+// 添加服务商(带预设快捷选择)
 function addProvider(page, state) {
   // 构建预设按钮 HTML
   const presetsHtml = PROVIDER_PRESETS.filter(p => !p.hidden).map(p =>
@@ -949,7 +1209,7 @@ function addProvider(page, state) {
       // 高亮选中的预设
       overlay.querySelectorAll('.preset-btn').forEach(b => b.style.opacity = '0.5')
       btn.style.opacity = '1'
-      // 显示服务商详情（官网、描述）
+      // 显示服务商详情(官网、描述)
       const detailEl = overlay.querySelector('#preset-detail')
       if (detailEl) {
         if (preset.desc || preset.site) {
@@ -1019,7 +1279,7 @@ function editProvider(page, state, providerKey) {
   })
 }
 
-// 添加模型（带预设快捷选择）
+// 添加模型(带预设快捷选择)
 function addModel(page, state, providerKey) {
   const presets = MODEL_PRESETS[providerKey] || []
   const existingIds = (state.config.models.providers[providerKey].models || [])
@@ -1036,7 +1296,7 @@ function addModel(page, state, providerKey) {
   ]
 
   if (available.length) {
-    // 有预设可用，构建自定义弹窗
+    // 有预设可用,构建自定义弹窗
     const overlay = document.createElement('div')
     overlay.className = 'modal-overlay'
 
@@ -1074,7 +1334,7 @@ function addModel(page, state, providerKey) {
       autoSave(state)
     })
 
-    // 预设按钮：点击直接添加
+    // 预设按钮:点击直接添加
     overlay.querySelectorAll('.preset-btn').forEach(btn => {
       btn.onclick = () => {
         const preset = available.find(p => p.id === btn.dataset.mid)
@@ -1091,7 +1351,7 @@ function addModel(page, state, providerKey) {
       }
     })
   } else {
-    // 无预设，直接弹普通 modal
+    // 无预设,直接弹普通 modal
     showModal({
       title: t('models.addModelTitle', { provider: providerKey }),
       fields,
@@ -1107,7 +1367,7 @@ function addModel(page, state, providerKey) {
   }
 }
 
-// 构建表单字段 HTML（用于自定义弹窗）
+// 构建表单字段 HTML(用于自定义弹窗)
 function buildFieldsHtml(fields) {
   return fields.map(f => {
     if (f.type === 'checkbox') {
@@ -1214,9 +1474,9 @@ async function handleBatchDelete(section, page, state, providerKey) {
   toast(t('models.batchDeleted', { count: ids.length }), 'info')
 }
 
-// 批量测试：勾选的模型，没勾选则测试全部（记录耗时和状态）
+// 批量测试:勾选的模型,没勾选则测试全部(记录耗时和状态)
 async function handleBatchTest(section, state, providerKey) {
-  // 如果正在测试，点击则终止
+  // 如果正在测试,点击则终止
   if (_batchTestAbort) {
     _batchTestAbort.abort = true
     toast(t('models.stoppingBatchTest'), 'warning')
@@ -1253,7 +1513,7 @@ async function handleBatchTest(section, state, providerKey) {
     const start = Date.now()
     try {
       await api.testModel(provider.baseUrl, provider.apiKey || '', modelId, provider.api || 'openai-completions')
-      const elapsed = Date.now() - start
+      const elapsed = Date.now() - star
       if (model && typeof model === 'object') {
         model.latency = elapsed
         model.lastTestAt = Date.now()
@@ -1262,7 +1522,7 @@ async function handleBatchTest(section, state, providerKey) {
       }
       ok++
     } catch (e) {
-      const elapsed = Date.now() - start
+      const elapsed = Date.now() - star
       if (model && typeof model === 'object') {
         model.latency = null
         model.lastTestAt = Date.now()
@@ -1277,7 +1537,7 @@ async function handleBatchTest(section, state, providerKey) {
       renderProviders(page, state)
       renderDefaultBar(page, state)
     }
-    // 进度 toast
+    // 进度 toas
     const status = model?.testStatus === 'ok' ? '\u2713' : '\u2717'
     const latStr = model?.latency != null ? ` ${(model.latency / 1000).toFixed(1)}s` : ''
     toast(`${status} ${modelId}${latStr} (${ok + fail}/${ids.length})`, model?.testStatus === 'ok' ? 'success' : 'error')
@@ -1285,7 +1545,7 @@ async function handleBatchTest(section, state, providerKey) {
 
   // 恢复按钮
   _batchTestAbort = null
-  // 重新查找按钮（renderProviders 后 DOM 已更新）
+  // 重新查找按钮(renderProviders 后 DOM 已更新)
   const newSection = page?.querySelector(`[data-provider="${providerKey}"]`)
   const newBtn = newSection?.querySelector('[data-action="batch-test"]')
   if (newBtn) {
@@ -1294,7 +1554,7 @@ async function handleBatchTest(section, state, providerKey) {
     newBtn.classList.add('btn-secondary')
   }
 
-  const aborted = ctrl.abort
+  const aborted = ctrl.abor
   autoSave(state)
   if (aborted) {
     toast(t('models.batchTestAborted', { ok, fail, skip: ids.length - ok - fail }), 'warning')
@@ -1411,20 +1671,20 @@ async function fetchRemoteModels(btn, page, state, providerKey) {
   }
 }
 
-// 测试模型连通性（记录耗时和状态）
+// 测试模型连通性(记录耗时和状态)
 async function testModel(btn, state, providerKey, idx) {
   const provider = state.config.models.providers[providerKey]
   const model = provider.models[idx]
   const modelId = typeof model === 'string' ? model : model.id
 
   btn.disabled = true
-  const origText = btn.textContent
+  const origText = btn.textConten
   btn.textContent = t('models.testing')
 
   const start = Date.now()
   try {
     const reply = await api.testModel(provider.baseUrl, provider.apiKey || '', modelId, provider.api || 'openai-completions')
-    const elapsed = Date.now() - start
+    const elapsed = Date.now() - star
     // 记录到模型对象
     if (typeof model === 'object') {
       model.latency = elapsed
@@ -1432,13 +1692,13 @@ async function testModel(btn, state, providerKey, idx) {
       model.testStatus = 'ok'
       delete model.testError
     }
-    // 包含 ⚠ 的是非致命错误（429 等），拆分显示
+    // 包含 ⚠ 的是非致命错误(429 等),拆分显示
     if (reply.startsWith('⚠')) {
       const lines = reply.split('\n')
       const summary = lines[0]
       const detail = lines.slice(1).join('\n').trim()
       if (detail) {
-        const detailHtml = detail.replace(/</g, '&lt;').replace(/(https?:\/\/[^\s,，。；）)'"&]+)/g, '<a href="$1" target="_blank" style="color:var(--primary);text-decoration:underline">$1</a>')
+        const detailHtml = detail.replace(/</g, '&lt;').replace(/(https?:\/\/[^\s，。;））'"&]+)/g, '<a href="$1" target="_blank" style="color:var(--primary);text-decoration:underline">$1</a>')
         toast(`<strong>${modelId}</strong> ${summary.replace(/</g, '&lt;')}<br><span style="font-size:11px;line-height:1.5;word-break:break-all">${detailHtml}</span>`, 'warning', { duration: 10000, html: true })
       } else {
         toast(`${modelId} ${summary}`, 'warning', { duration: 6000 })
@@ -1447,7 +1707,7 @@ async function testModel(btn, state, providerKey, idx) {
       toast(t('models.testOk', { model: modelId, time: (elapsed / 1000).toFixed(1), reply: reply.slice(0, 50) }), 'success')
     }
   } catch (e) {
-    const elapsed = Date.now() - start
+    const elapsed = Date.now() - star
     if (typeof model === 'object') {
       model.latency = null
       model.lastTestAt = Date.now()
@@ -1457,14 +1717,14 @@ async function testModel(btn, state, providerKey, idx) {
     toast(t('models.testFail', { model: modelId, time: (elapsed / 1000).toFixed(1), error: e }), 'error', { duration: 8000 })
   } finally {
     btn.disabled = false
-    btn.textContent = origText
+    btn.textContent = origTex
     // 刷新卡片显示最新状态
     const page = btn.closest('.page')
     if (page) {
       renderProviders(page, state)
       renderDefaultBar(page, state)
     }
-    // 持久化测试结果（仅保存，不重启 Gateway）
+    // 持久化测试结果(仅保存,不重启 Gateway)
     saveConfigOnly(state)
   }
 }
